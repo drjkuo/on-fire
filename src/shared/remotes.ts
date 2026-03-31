@@ -48,6 +48,25 @@ function getFunction(name: string): RemoteFunction {
 	return folder.WaitForChild(name, 10) as RemoteFunction;
 }
 
+// Eager-create on the server when this ModuleScript loads so clients never WaitForChild on remotes
+// that would otherwise only exist after late gameplay (e.g. HeroUltimate was only created on first ult).
+if (IS_SERVER) {
+	for (const name of [
+		"GameState",
+		"EnemySpawned",
+		"EnemyHealth",
+		"EnemyReachedEnd",
+		"ObstacleSpawn",
+		"ObstacleHealth",
+		"HeroUltimate",
+		"Shoot",
+		"GateTrigger",
+	]) {
+		getRemote(name);
+	}
+	getFunction("RequestState");
+}
+
 // Server → All Clients
 export const getGameStateRemote   = () => getRemote("GameState")         as RemoteEvent<(d: GameStateData) => void>;
 export const getEnemySpawnedRemote= () => getRemote("EnemySpawned")      as RemoteEvent<(d: EnemySpawnData) => void>;

@@ -21,6 +21,7 @@ import {
 	FLOOR_Y,
 	GameState,
 	HEROES,
+	STARTING_SQUAD,
 	betterSide,
 	type GameStateData,
 	type EnemySpawnData,
@@ -50,6 +51,13 @@ const MAX_SOLDIERS  = 35;   // cap on rendered parts
 const PLAYER_Z      = 0;
 const FAR_Z         = -75;
 const SHOOT_RATE    = 0.12; // seconds between shots
+
+// ---------------------------------------------------------------------------
+// Synced game state — must sit before any closure (e.g. autoShoot) reads it, otherwise
+// roblox-ts emits a separate uninitialized local and squad count can desync from visuals.
+// ---------------------------------------------------------------------------
+let curState: GameState = GameState.Lobby;
+let currentSquadSize = STARTING_SQUAD;
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -166,7 +174,8 @@ function ensureSoldiers(count: number): void {
 }
 
 function placeSoldiers(cx: number, cz: number, count: number): void {
-	const vis = math.min(count, MAX_SOLDIERS);
+	const safe = typeOf(count) === "number" && count >= 0 ? count : STARTING_SQUAD;
+	const vis = math.min(safe, MAX_SOLDIERS);
 	ensureSoldiers(vis);
 	for (let i = 0; i < soldiers.size(); i++) {
 		const show = i < vis;
@@ -339,49 +348,75 @@ function autoShoot(dt: number, cx: number, cz: number): void {
 // ---------------------------------------------------------------------------
 const triggeredGates = new Set<string>();
 
+interface GatePanels {
+	left?: Part;
+	right?: Part;
+}
+
 function checkGates(cx: number, cz: number, squad: number): void {
 	const map = Workspace.FindFirstChild("GameMap");
 	if (!map) return;
+
+	const gatesById = new Map<number, GatePanels>();
 	map.GetChildren().forEach((child) => {
 		if (!child.IsA("Part")) return;
-		const part = child as Part;
-		const name = part.Name;
+		const name = child.Name;
 		if (!name.match("^Gate_")[0]) return;
-		if (triggeredGates.has(name)) return;
-
-		const zDiff = part.Position.Z - cz;
-		if (math.abs(zDiff) > 1.5) return;
-		if (math.abs(part.Position.X - cx) > PATH_WIDTH / 3) return;
-
-		triggeredGates.add(name);
 		const segs = name.split("_");
 		if (segs.size() < 3) return;
 		const gateId = tonumber(segs[1]);
-		const side   = segs[2];
+		const side = segs[2];
 		if (!gateId) return;
+		let p = gatesById.get(gateId);
+		if (!p) {
+			p = {};
+			gatesById.set(gateId, p);
+		}
+		const part = child as Part;
+		if (side === "Left") p.left = part;
+		else if (side === "Right") p.right = part;
+	});
 
-		getGateTriggerRemote().FireServer(gateId, side);
+	gatesById.forEach((pair, gateId) => {
+		const dedupeKey = `GatePair_${gateId}`;
+		if (triggeredGates.has(dedupeKey)) return;
+		const left = pair.left;
+		const right = pair.right;
+		if (!left || !right) return;
 
-		// Flash
+		const zDiff = left.Position.Z - cz;
+		if (math.abs(zDiff) > 1.5) return;
+		if (math.abs(cx) > PATH_WIDTH / 2 + 0.5) return;
+
+		const distL = math.abs(cx - left.Position.X);
+		const distR = math.abs(cx - right.Position.X);
+		const pickLeft = distL < distR || (distL === distR && cx <= 0);
+		const part = pickLeft ? left : right;
+		const sideStr = pickLeft ? "Left" : "Right";
+		if (math.abs(part.Position.X - cx) > PATH_WIDTH / 3) return;
+
+		triggeredGates.add(dedupeKey);
+		getGateTriggerRemote().FireServer(gateId, sideStr);
+
 		const orig = part.BrickColor;
 		part.BrickColor = new BrickColor("White");
-		task.delay(0.25, () => { if (part && part.Parent) part.BrickColor = orig; });
+		task.delay(0.25, () => {
+			if (part && part.Parent) part.BrickColor = orig;
+		});
 	});
 }
 
 // ---------------------------------------------------------------------------
 // State tracking
 // ---------------------------------------------------------------------------
-let curState: GameState = GameState.Lobby;
-let currentSquadSize    = 15;
-
 function onGameState(d: GameStateData): void {
-	curState          = d.state;
-	currentSquadSize  = d.squadSize;
+	curState = d.state;
+	const sz = d.squadSize;
+	currentSquadSize = typeOf(sz) === "number" && sz >= 0 ? sz : STARTING_SQUAD;
 
 	lblWave.Text  = `Wave ${d.wave}`;
 	lblScore.Text = tostring(d.score);
-	lblSquad.Text = `x${d.squadSize}`;
+	lblSquad.Text = `x${currentSquadSize}`;
 	lblMult.Text  = `x${d.multiplier}`;
 
 	if (d.bossMaxHp > 0) {
@@ -402,7 +437,43 @@ function onGameState(d: GameStateData): void {
 	} else {
 		overlay.Visible = false;
 	}
+
+	syncAvatarMovementLock();
 }
+
+// ---------------------------------------------------------------------------
+// Avatar — Roblox still maps WASD/arrow to Humanoid movement, so players only
+// saw their character move. Lock movement while the run is active so keys steer the squad.
+// ---------------------------------------------------------------------------
+const DEFAULT_WALKSPEED = 16;
+const DEFAULT_JUMPPOWER = 50;
+
+function applyAvatarMovementLock(character: Model | undefined, locked: boolean): void {
+	if (!character) return;
+	const hum = character.FindFirstChildOfClass("Humanoid");
+	if (!hum) return;
+	if (locked) {
+		hum.WalkSpeed = 0;
+		hum.JumpPower = 0;
+		hum.AutoRotate = false;
+	} else {
+		hum.WalkSpeed = DEFAULT_WALKSPEED;
+		hum.JumpPower = DEFAULT_JUMPPOWER;
+		hum.AutoRotate = true;
+	}
+}
+
+function syncAvatarMovementLock(): void {
+	const locked = curState !== GameState.GameOver;
+	applyAvatarMovementLock(localPlayer.Character ?? undefined, locked);
+}
+
+localPlayer.CharacterAdded.Connect((char) => {
+	task.spawn(() => {
+		char.WaitForChild("Humanoid", 10);
+		applyAvatarMovementLock(char, curState !== GameState.GameOver);
+	});
+});
 
 // ---------------------------------------------------------------------------
 // Input / steering
@@ -422,39 +493,47 @@ UserInputService.TouchMoved.Connect((t) => {
 UserInputService.TouchEnded.Connect(() => { isDragging = false; });
 
 // ---------------------------------------------------------------------------
-// Render loop
+// Camera (shared with render loop + boot)
 // ---------------------------------------------------------------------------
-RunService.RenderStepped.Connect((dt: number) => {
-	if (curState !== GameState.Playing && curState !== GameState.BossFight) return;
-
-	// Keyboard steer
-	let steer = 0;
-	if (UserInputService.IsKeyDown(Enum.KeyCode.A) || UserInputService.IsKeyDown(Enum.KeyCode.Left))  steer = -1;
-	if (UserInputService.IsKeyDown(Enum.KeyCode.D) || UserInputService.IsKeyDown(Enum.KeyCode.Right)) steer =  1;
-	squadX = math.clamp(squadX + steer * STEER_SPEED * dt, -LANE_LIMIT, LANE_LIMIT);
-
-	// March forward
-	squadZ = math.max(FAR_Z, squadZ - MARCH_SPEED * dt);
-
-	// Squad visuals
-	placeSoldiers(squadX, squadZ, currentSquadSize);
-
-	// Enemy/obstacle position sync
-	syncEnemyPositions();
-
-	// Gate triggers
-	checkGates(squadX, squadZ, currentSquadSize);
-
-	// Auto-shoot
-	autoShoot(dt, squadX, squadZ);
-
-	// Camera: top-down follow
+function updateFollowCamera(): void {
 	const cam = Workspace.CurrentCamera;
 	if (cam) {
 		cam.CFrame = new CFrame(
 			new Vector3(squadX, FLOOR_Y + 18, squadZ + 22),
 			new Vector3(squadX, FLOOR_Y,      squadZ - 8),
 		);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+RunService.RenderStepped.Connect((dt: number) => {
+	const march =
+		curState === GameState.Playing ||
+		curState === GameState.BossFight ||
+		curState === GameState.WaveComplete;
+
+	if (march) {
+		// Keyboard steer
+		let steer = 0;
+		if (UserInputService.IsKeyDown(Enum.KeyCode.A) || UserInputService.IsKeyDown(Enum.KeyCode.Left))  steer = -1;
+		if (UserInputService.IsKeyDown(Enum.KeyCode.D) || UserInputService.IsKeyDown(Enum.KeyCode.Right)) steer =  1;
+		squadX = math.clamp(squadX + steer * STEER_SPEED * dt, -LANE_LIMIT, LANE_LIMIT);
+
+		// March forward
+		squadZ = math.max(FAR_Z, squadZ - MARCH_SPEED * dt);
+
+		syncEnemyPositions();
+		checkGates(squadX, squadZ, currentSquadSize);
+		autoShoot(dt, squadX, squadZ);
+	}
+
+	// Previously we returned early for Lobby/WaveComplete, so placeSoldiers never ran and
+	// no Squad parts were created until Playing — looked like "no team".
+	if (curState !== GameState.GameOver) {
+		placeSoldiers(squadX, squadZ, currentSquadSize);
+		updateFollowCamera();
 	}
 });
 
@@ -471,7 +550,13 @@ getHeroUltimateRemote().OnClientEvent.Connect((heroIdx, desc) => {
 // ---------------------------------------------------------------------------
 // Server event wiring
 // ---------------------------------------------------------------------------
-getGameStateRemote().OnClientEvent.Connect((d)   => onGameState(d as GameStateData));
+// If GameState fires while InvokeServer is yielding, applying stale init would overwrite
+// (e.g. Playing → Lobby) and the squad would never march.
+let receivedGameStateViaRemote = false;
+getGameStateRemote().OnClientEvent.Connect((d) => {
+	receivedGameStateViaRemote = true;
+	onGameState(d as GameStateData);
+});
 getEnemySpawnedRemote().OnClientEvent.Connect((d) => spawnEnemyVisual(d as EnemySpawnData));
 getEnemyHealthRemote().OnClientEvent.Connect((d)  => updateEnemyVis(d as EnemyHealthData));
 getEnemyReachedEndRemote().OnClientEvent.Connect((id) => removeEnemyVis(id as number));
@@ -480,6 +565,24 @@ getObstacleHealthRemote().OnClientEvent.Connect((d) => updateObstacleVis(d as En
 
 // Initial state fetch
 const init = getRequestStateFunction().InvokeServer() as GameStateData;
-onGameState(init);
+if (!receivedGameStateViaRemote) {
+	onGameState(init);
+}
+// curState is updated in onGameState / remote; avoid narrowed-type false positive on curState
+if ((curState as GameState) !== GameState.GameOver) {
+	placeSoldiers(squadX, squadZ, currentSquadSize);
+	updateFollowCamera();
+}
+
+// If startGame ran after our first Invoke, we can still be on Lobby until a late GameState arrives.
+task.defer(() => {
+	if (curState !== GameState.Lobby) return;
+	const late = getRequestStateFunction().InvokeServer() as GameStateData;
+	onGameState(late);
+	if ((curState as GameState) !== GameState.GameOver) {
+		placeSoldiers(squadX, squadZ, currentSquadSize);
+		updateFollowCamera();
+	}
+});
 
 print("[ShootingGame] Client ready.");

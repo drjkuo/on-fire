@@ -119,11 +119,22 @@ const heroStates: HeroState[] = HEROES.map((_, i) => ({
 // Broadcast
 // ---------------------------------------------------------------------------
 
-function broadcast(): void {
-	getGameStateRemote().FireAllClients({
+function snapshotGameState(): GameStateData {
+	return {
 		state: gameState, wave: currentWave, score,
 		squadSize, multiplier, bossHp, bossMaxHp,
-	} as GameStateData);
+	} as GameStateData;
+}
+
+function broadcast(): void {
+	getGameStateRemote().FireAllClients(snapshotGameState());
+}
+
+/** Ensures the client gets a GameState after its RemoteEvent listener exists (FireAllClients can fire too early). */
+function deferPushStateToPlayer(player: Player): void {
+	task.defer(() => {
+		getGameStateRemote().FireClient(player, snapshotGameState());
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +562,15 @@ getRequestStateFunction().OnServerInvoke = (_p: Player): GameStateData => ({
 	squadSize, multiplier, bossHp, bossMaxHp,
 });
 
-Players.PlayerAdded.Connect(() => { if (gameState === GameState.Lobby) startGame(); });
+Players.PlayerAdded.Connect((player) => {
+	if (gameState === GameState.Lobby) startGame();
+	deferPushStateToPlayer(player);
+});
 if (Players.GetPlayers().size() > 0 && gameState === GameState.Lobby) startGame();
+task.defer(() => {
+	for (const player of Players.GetPlayers()) {
+		getGameStateRemote().FireClient(player, snapshotGameState());
+	}
+});
 
 print("[ShootingGame] Server ready – full mechanics loaded.");
