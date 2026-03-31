@@ -10,6 +10,7 @@
 export const PATH_LENGTH = 80;
 export const PATH_WIDTH = 12;
 export const TILE_HEIGHT = 1;
+export const FLOOR_Y = 0;
 
 /** Gap between gate pairs along the path. */
 export const GATE_SPACING = 15;
