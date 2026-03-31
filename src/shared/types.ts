@@ -1,148 +1,194 @@
 /**
  * shared/types.ts
- * Shared type definitions and interfaces used by both server and client.
+ * Shared type definitions and constants for the Squad Runner shooting game.
  */
 
 // ---------------------------------------------------------------------------
 // Game constants
 // ---------------------------------------------------------------------------
 
-/** Total number of path tiles stretching away from the player spawn. */
-export const PATH_LENGTH = 60;
-
-/** Y coordinate of the ground/floor surface. */
-export const FLOOR_Y = 0;
-
-/** Width of the bridge/path in studs. */
-export const PATH_WIDTH = 10;
-
-/** Height of each path tile (thickness of the floor). */
+export const PATH_LENGTH = 80;
+export const PATH_WIDTH = 12;
 export const TILE_HEIGHT = 1;
 
-/** How far apart gate pairs are spaced along the path. */
-export const GATE_SPACING = 20;
+/** Gap between gate pairs along the path. */
+export const GATE_SPACING = 15;
 
-/** Projectile travel speed in studs per second. */
-export const PROJECTILE_SPEED = 80;
+/** Seconds between wave spawns. */
+export const WAVE_INTERVAL = 10;
 
-/** Radius used for projectile hit-detection sphere casts. */
-export const PROJECTILE_HIT_RADIUS = 1.2;
+/** Base horde size for wave 1. */
+export const BASE_ENEMIES_PER_WAVE = 8;
 
-/** How many seconds between wave spawns. */
-export const WAVE_INTERVAL = 8;
+/** Enemy walk speed (studs/s). */
+export const ENEMY_SPEED = 5;
 
-/** Base enemy count for wave 1; scales with wave number. */
-export const BASE_ENEMIES_PER_WAVE = 5;
+/** Base HP for regular enemies. */
+export const ENEMY_BASE_HP = 4;
 
-/** Enemy walk speed in studs per second. */
-export const ENEMY_SPEED = 6;
+/** Starting squad size. */
+export const STARTING_SQUAD = 15;
 
-/** Enemy health points (base). */
-export const ENEMY_BASE_HP = 3;
-
-/** How many lives the player starts with. */
-export const STARTING_LIVES = 3;
-
-/** Score awarded for each enemy kill. */
+/** Score per kill. */
 export const SCORE_PER_KILL = 10;
 
-/** Score bonus awarded for completing a wave. */
-export const WAVE_COMPLETION_BONUS = 50;
+/** Bonus score per wave clear. */
+export const WAVE_COMPLETION_BONUS = 100;
+
+/** How many waves before the boss fight. */
+export const WAVES_PER_BOSS = 3;
 
 // ---------------------------------------------------------------------------
 // Enumerations
 // ---------------------------------------------------------------------------
 
-/** Identifies which side of a gate the player walked through. */
-export const enum GateSide {
-	Left = "Left",
-	Right = "Right",
-}
-
-/** Runtime state of the overall game session. */
 export const enum GameState {
-	Lobby = "Lobby",
-	Playing = "Playing",
+	Lobby        = "Lobby",
+	Playing      = "Playing",
 	WaveComplete = "WaveComplete",
-	GameOver = "GameOver",
+	BossFight    = "BossFight",
+	GameOver     = "GameOver",
+}
+
+export const enum HeroRole {
+	Tank   = "Tank",   // front row – shield ability
+	Damage = "Damage", // back row – heavy fire
 }
 
 // ---------------------------------------------------------------------------
-// Data interfaces
+// Interfaces
 // ---------------------------------------------------------------------------
 
-/** Snapshot of the current session sent to all clients. */
+/** Full game snapshot broadcast to clients whenever state changes. */
 export interface GameStateData {
 	state: GameState;
 	wave: number;
 	score: number;
-	lives: number;
+	/** Current squad troop count (also used as effective HP). */
+	squadSize: number;
 	multiplier: number;
+	/** Remaining HP of the active boss (0 if no boss). */
+	bossHp: number;
+	bossMaxHp: number;
 }
 
-/** Describes a gate object placed along the path. */
+/** Describes one gate panel pair placed along the path. */
 export interface GateData {
-	/** Unique id for this gate instance. */
 	id: number;
-	/** Distance from player spawn along the path. */
-	position: number;
-	/** Label shown on the left post (e.g. "+1"). */
+	/** World Z of the gate. */
+	z: number;
 	leftLabel: string;
-	/** Label shown on the right post (e.g. "x2"). */
 	rightLabel: string;
-	/** Effect applied when walking through the left post. */
 	leftEffect: GateEffect;
-	/** Effect applied when walking through the right post. */
 	rightEffect: GateEffect;
 }
 
-/** Effect that a gate post applies to the score multiplier or lives. */
+/** Effect applied to squad size when walking through a gate panel. */
 export interface GateEffect {
-	/** "add" increments the multiplier; "multiply" scales it; "life" grants extra life. */
-	type: "add" | "multiply" | "life";
+	/** "add" = squadSize += value (can be negative), "multiply" = squadSize *= value */
+	type: "add" | "multiply";
 	value: number;
 }
 
 /** Minimal data the client needs to render a spawned enemy. */
 export interface EnemySpawnData {
-	/** Server-assigned unique id. */
 	id: number;
-	/** World-space spawn position. */
 	position: Vector3;
-	/** Maximum HP (used to render health bar proportionally). */
 	maxHp: number;
+	isBoss: boolean;
 }
 
-/** Fired whenever an enemy's HP changes. */
+/** HP change for an enemy or obstacle. */
 export interface EnemyHealthData {
 	id: number;
 	hp: number;
 	maxHp: number;
 }
 
-/** Payload sent from client to server when firing a shot. */
+/** An obstacle (barricade/box) placed on the path with an HP pool. */
+export interface ObstacleData {
+	id: number;
+	position: Vector3;
+	hp: number;
+	/** Whether destroying this box frees trapped soldiers (+squadSize). */
+	hasTroops: boolean;
+	/** How many troops are freed on destruction. */
+	troopReward: number;
+}
+
+/** Client -> Server shoot request. */
 export interface ShootRequest {
-	/** Ray origin in world space (camera / gun position). */
 	origin: Vector3;
-	/** Unit direction vector. */
 	direction: Vector3;
 }
 
 // ---------------------------------------------------------------------------
-// Additional gate effect helpers (negative gates like -8 shown in screenshots)
+// Hero definitions
+// ---------------------------------------------------------------------------
+
+export interface HeroDefinition {
+	name: string;
+	role: HeroRole;
+	/** Base attack damage contribution per second. */
+	attackDps: number;
+	/** Cooldown (seconds) for ultimate ability. */
+	ultimateCooldown: number;
+	/** Description of the ultimate. */
+	ultimateDesc: string;
+}
+
+export const HEROES: HeroDefinition[] = [
+	{ name: "Shield Guard",   role: HeroRole.Tank,   attackDps: 2,  ultimateCooldown: 20, ultimateDesc: "Energy Shield – absorbs next 10 troop losses" },
+	{ name: "Iron Wall",      role: HeroRole.Tank,   attackDps: 3,  ultimateCooldown: 25, ultimateDesc: "Fortify – halves damage taken for 5 s" },
+	{ name: "Gatling Ace",    role: HeroRole.Damage, attackDps: 8,  ultimateCooldown: 18, ultimateDesc: "Bullet Storm – triples DPS for 4 s" },
+	{ name: "Rocket Commander",role: HeroRole.Damage,attackDps: 10, ultimateCooldown: 30, ultimateDesc: "Missile Barrage – deals 100 dmg to all enemies" },
+	{ name: "Helicopter Pilot",role: HeroRole.Damage,attackDps: 12, ultimateCooldown: 35, ultimateDesc: "Airstrike – deals 200 dmg to the boss" },
+];
+
+// ---------------------------------------------------------------------------
+// Gate generation helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a random gate pair: one positive, one negative side.
- * Mirrors the "-8 / +5" style gates seen in the reference screenshots.
+ * Generates a gate pair with one positive and one negative side.
+ * Operators are +/- for small squads, x/÷ for later waves.
  */
-export function randomGatePair(): { leftLabel: string; rightLabel: string; leftEffect: GateEffect; rightEffect: GateEffect } {
-	const addVal  = math.random(1, 5);
-	const loseVal = math.random(2, 8);
-	return {
-		leftLabel:   `-${loseVal}`,
-		rightLabel:  `+${addVal}`,
-		leftEffect:  { type: "add", value: -loseVal },
-		rightEffect: { type: "add", value: addVal },
-	};
+export function generateGatePair(wave: number, squadSize: number): {
+	leftLabel: string; rightLabel: string;
+	leftEffect: GateEffect; rightEffect: GateEffect;
+} {
+	const useMult = wave >= 3 && squadSize >= 20;
+
+	if (useMult) {
+		// One multiply side, one divide side
+		const mult = math.random(2, 3);
+		const div  = math.random(2, 2);
+		return {
+			leftLabel:   `÷${div}`,
+			rightLabel:  `x${mult}`,
+			leftEffect:  { type: "multiply", value: 1 / div },
+			rightEffect: { type: "multiply", value: mult },
+		};
+	} else {
+		// One add side (positive), one add side (negative)
+		const gain = math.random(3, 10);
+		const loss = math.random(3, 8);
+		return {
+			leftLabel:   `-${loss}`,
+			rightLabel:  `+${gain}`,
+			leftEffect:  { type: "add", value: -loss },
+			rightEffect: { type: "add", value: gain },
+		};
+	}
+}
+
+/** Returns true if the positive-side effect is better given current squad size. */
+export function betterSide(
+	left: GateEffect,
+	right: GateEffect,
+	squad: number,
+): "left" | "right" {
+	const applyEffect = (e: GateEffect) =>
+		e.type === "add" ? squad + e.value : math.floor(squad * e.value);
+	return applyEffect(left) >= applyEffect(right) ? "left" : "right";
 }

@@ -1,15 +1,18 @@
 /**
  * client/main.client.ts
  *
- * Squad Runner Shooting Game – client visuals + input.
+ * Squad Runner Shooting Game – Client
  *
- * Responsibilities:
- *  - Render the player's squad of blue soldiers (NPCs that follow the camera)
- *  - Render enemy soldiers / bosses with health bars
- *  - Handle left/right lane steering (moves squad into gate panels)
- *  - Show HUD: wave, score, squad size, multiplier
- *  - Fire projectile visual effects when shooting
- *  - React to server state broadcasts
+ * Handles:
+ *  - Squad visual rendering (blue soldiers in grid formation)
+ *  - Enemy / boss visual rendering with HP bars
+ *  - Obstacle rendering with HP counters
+ *  - A/D + touch drag steering to pick gate sides
+ *  - Gate proximity detection → fires GateTrigger to server
+ *  - Auto-shoot rays toward nearest enemy + projectile FX
+ *  - HUD: wave, score, squad count, multiplier, boss HP bar
+ *  - Hero ultimate overlay notifications
+ *  - "Best side" hint arrow over gate pairs
  */
 
 import { Players, UserInputService, RunService, Workspace, TweenService } from "@rbxts/services";
@@ -17,70 +20,94 @@ import {
 	PATH_WIDTH,
 	FLOOR_Y,
 	GameState,
+	HEROES,
+	betterSide,
 	type GameStateData,
 	type EnemySpawnData,
 	type EnemyHealthData,
+	type ObstacleData,
 } from "../shared/types";
 import {
 	getGameStateRemote,
 	getEnemySpawnedRemote,
 	getEnemyHealthRemote,
 	getEnemyReachedEndRemote,
+	getObstacleSpawnRemote,
+	getObstacleHealthRemote,
+	getHeroUltimateRemote,
 	getShootRemote,
 	getGateTriggerRemote,
 	getRequestStateFunction,
 } from "../shared/remotes";
 
 // ---------------------------------------------------------------------------
-// Constants
+// World / squad constants
 // ---------------------------------------------------------------------------
-
-const SQUAD_MARCH_SPEED = 8;          // studs/s forward (toward enemies)
-const SQUAD_STEER_SPEED = 12;         // studs/s lateral steering
-const SQUAD_Z_PLAYER = 0;             // player start Z
-const SQUAD_Z_END    = -55;           // far end of bridge (enemies spawn here)
-const SQUAD_FORMATION_RADIUS = 3;     // how spread out the formation is
-const MAX_SQUAD_VISUAL = 30;          // cap on rendered soldier parts
+const MARCH_SPEED   = 9;    // forward studs/s
+const STEER_SPEED   = 14;   // lateral studs/s
+const SQUAD_FORM_R  = 3.5;  // formation spread radius
+const MAX_SOLDIERS  = 35;   // cap on rendered parts
+const PLAYER_Z      = 0;
+const FAR_Z         = -75;
+const SHOOT_RATE    = 0.12; // seconds between shots
 
 // ---------------------------------------------------------------------------
-// HUD setup
+// HUD
 // ---------------------------------------------------------------------------
-
-const player = Players.LocalPlayer;
-const playerGui = player.WaitForChild("PlayerGui") as PlayerGui;
-
-const screenGui = new Instance("ScreenGui");
-screenGui.Name = "GameHUD";
-screenGui.ResetOnSpawn = false;
+const localPlayer = Players.LocalPlayer;
+const playerGui   = localPlayer.WaitForChild("PlayerGui") as PlayerGui;
+const screenGui   = new Instance("ScreenGui");
+screenGui.Name = "GameHUD"; screenGui.ResetOnSpawn = false;
 screenGui.Parent = playerGui;
 
 // Top bar
 const topBar = new Instance("Frame");
-topBar.Size = new UDim2(1, 0, 0, 60);
-topBar.Position = new UDim2(0, 0, 0, 0);
+topBar.Size = new UDim2(1, 0, 0, 64);
 topBar.BackgroundColor3 = new Color3(0, 0, 0);
-topBar.BackgroundTransparency = 0.4;
+topBar.BackgroundTransparency = 0.35;
 topBar.Parent = screenGui;
 
-function makeLabel(text: string, x: number, width: number): TextLabel {
-	const lbl = new Instance("TextLabel");
-	lbl.Size = new UDim2(0, width, 1, 0);
-	lbl.Position = new UDim2(0, x, 0, 0);
-	lbl.BackgroundTransparency = 1;
-	lbl.Font = Enum.Font.GothamBold;
-	lbl.TextColor3 = new Color3(1, 1, 1);
-	lbl.TextScaled = true;
-	lbl.Text = text;
-	lbl.Parent = topBar;
-	return lbl;
+function hudLabel(x: number, w: number, text: string): TextLabel {
+	const l = new Instance("TextLabel");
+	l.Size = new UDim2(0, w, 1, 0);
+	l.Position = new UDim2(0, x, 0, 0);
+	l.BackgroundTransparency = 1;
+	l.Font = Enum.Font.GothamBold;
+	l.TextColor3 = new Color3(1, 1, 1);
+	l.TextScaled = true;
+	l.Text = text;
+	l.Parent = topBar;
+	return l;
 }
+const lblWave  = hudLabel(8,   160, "Wave 1");
+const lblScore = hudLabel(176, 200, "0");
+const lblSquad = hudLabel(384, 200, "Squad 15");
+const lblMult  = hudLabel(592, 120, "x1");
 
-const waveLabel     = makeLabel("Wave 0",   10,  160);
-const scoreLabel    = makeLabel("Score 0",  180, 200);
-const squadLabel    = makeLabel("Squad 10", 390, 200);
-const multLabel     = makeLabel("x1",       600, 120);
+// Boss HP bar (hidden until boss fight)
+const bossBarBg = new Instance("Frame");
+bossBarBg.Size = new UDim2(0.5, 0, 0, 24);
+bossBarBg.Position = new UDim2(0.25, 0, 0, 68);
+bossBarBg.BackgroundColor3 = new Color3(0.15, 0.15, 0.15);
+bossBarBg.Visible = false;
+bossBarBg.Parent = screenGui;
 
-// Wave complete / game over overlay
+const bossBarFill = new Instance("Frame");
+bossBarFill.Size = new UDim2(1, 0, 1, 0);
+bossBarFill.BackgroundColor3 = new Color3(1, 0.1, 0.1);
+bossBarFill.BorderSizePixel = 0;
+bossBarFill.Parent = bossBarBg;
+
+const bossBarLbl = new Instance("TextLabel");
+bossBarLbl.Size = new UDim2(1, 0, 1, 0);
+bossBarLbl.BackgroundTransparency = 1;
+bossBarLbl.Font = Enum.Font.GothamBold;
+bossBarLbl.TextColor3 = new Color3(1, 1, 1);
+bossBarLbl.TextScaled = true;
+bossBarLbl.Text = "BOSS";
+bossBarLbl.Parent = bossBarBg;
+
+// Overlay (wave clear / game over)
 const overlay = new Instance("Frame");
 overlay.Size = new UDim2(1, 0, 1, 0);
 overlay.BackgroundColor3 = new Color3(0, 0, 0);
@@ -88,123 +115,104 @@ overlay.BackgroundTransparency = 0.5;
 overlay.Visible = false;
 overlay.Parent = screenGui;
 
-const overlayLabel = new Instance("TextLabel");
-overlayLabel.Size = new UDim2(0.6, 0, 0.2, 0);
-overlayLabel.Position = new UDim2(0.2, 0, 0.4, 0);
-overlayLabel.BackgroundTransparency = 1;
-overlayLabel.Font = Enum.Font.GothamBold;
-overlayLabel.TextColor3 = new Color3(1, 1, 0);
-overlayLabel.TextScaled = true;
-overlayLabel.Text = "";
-overlayLabel.Parent = overlay;
+const overlayLbl = new Instance("TextLabel");
+overlayLbl.Size = new UDim2(0.7, 0, 0.25, 0);
+overlayLbl.Position = new UDim2(0.15, 0, 0.375, 0);
+overlayLbl.BackgroundTransparency = 1;
+overlayLbl.Font = Enum.Font.GothamBold;
+overlayLbl.TextColor3 = new Color3(1, 1, 0);
+overlayLbl.TextScaled = true;
+overlayLbl.Text = "";
+overlayLbl.Parent = overlay;
+
+// Ultimate notification
+const ultNotif = new Instance("TextLabel");
+ultNotif.Size = new UDim2(0.6, 0, 0.07, 0);
+ultNotif.Position = new UDim2(0.2, 0, 0.15, 0);
+ultNotif.BackgroundTransparency = 1;
+ultNotif.Font = Enum.Font.GothamBold;
+ultNotif.TextColor3 = new Color3(1, 0.8, 0);
+ultNotif.TextScaled = true;
+ultNotif.Text = "";
+ultNotif.Visible = false;
+ultNotif.Parent = screenGui;
 
 // ---------------------------------------------------------------------------
-// Squad rendering
+// Squad visuals
 // ---------------------------------------------------------------------------
+interface SoldierVis { body: Part; head: Part }
+const squadFolder = new Instance("Folder");
+squadFolder.Name = "Squad"; squadFolder.Parent = Workspace;
+const soldiers: SoldierVis[] = [];
 
-interface SoldierVisual {
-	root: Part;
-	head: Part;
-}
+function ensureSoldiers(count: number): void {
+	while (soldiers.size() < count) {
+		const body = new Instance("Part");
+		body.Size = new Vector3(1.2, 1.9, 1.2);
+		body.Anchored = true; body.CanCollide = false;
+		body.Material = Enum.Material.SmoothPlastic;
+		body.BrickColor = new BrickColor("White");
+		body.Parent = squadFolder;
 
-const soldierFolder = new Instance("Folder");
-soldierFolder.Name = "PlayerSquad";
-soldierFolder.Parent = Workspace;
+		const head = new Instance("Part");
+		head.Size = new Vector3(1.3, 1.3, 1.3);
+		head.Anchored = true; head.CanCollide = false;
+		head.Shape = Enum.PartType.Ball;
+		head.BrickColor = new BrickColor("Bright blue");
+		head.Parent = squadFolder;
 
-const soldiers: SoldierVisual[] = [];
-
-function makeSoldier(): SoldierVisual {
-	const root = new Instance("Part");
-	root.Size = new Vector3(1.2, 1.8, 1.2);
-	root.Anchored = true;
-	root.CanCollide = false;
-	root.Material = Enum.Material.SmoothPlastic;
-	root.BrickColor = new BrickColor("White");
-	root.Parent = soldierFolder;
-
-	const head = new Instance("Part");
-	head.Size = new Vector3(1.2, 1.2, 1.2);
-	head.Anchored = true;
-	head.CanCollide = false;
-	head.Shape = Enum.PartType.Ball;
-	head.Material = Enum.Material.SmoothPlastic;
-	head.BrickColor = new BrickColor("Bright blue");
-	head.Parent = soldierFolder;
-
-	return { root, head };
-}
-
-function updateSquadVisuals(count: number, centerX: number, centerZ: number): void {
-	const target = math.min(count, MAX_SQUAD_VISUAL);
-
-	// Add missing soldiers
-	while (soldiers.size() < target) {
-		soldiers.push(makeSoldier());
+		soldiers.push({ body, head });
 	}
-	// Hide excess
+}
+
+function placeSoldiers(cx: number, cz: number, count: number): void {
+	const vis = math.min(count, MAX_SOLDIERS);
+	ensureSoldiers(vis);
 	for (let i = 0; i < soldiers.size(); i++) {
-		const visible = i < target;
-		soldiers[i].root.Transparency = visible ? 0 : 1;
-		soldiers[i].head.Transparency = visible ? 0 : 1;
-	}
-	// Position in grid formation
-	for (let i = 0; i < target; i++) {
-		const cols = math.ceil(math.sqrt(target));
-		const col = i % cols;
-		const row = math.floor(i / cols);
-		const xOff = (col - cols / 2) * 1.4;
-		const zOff = (row - math.ceil(target / cols) / 2) * 1.4;
-		const pos = new Vector3(centerX + xOff, FLOOR_Y + 0.9, centerZ + zOff);
-		soldiers[i].root.Position = pos;
-		soldiers[i].head.Position = new Vector3(pos.X, pos.Y + 1.5, pos.Z);
+		const show = i < vis;
+		soldiers[i].body.Transparency = show ? 0 : 1;
+		soldiers[i].head.Transparency = show ? 0 : 1;
+		if (!show) continue;
+		const cols = math.max(1, math.ceil(math.sqrt(vis)));
+		const c = i % cols;
+		const r = math.floor(i / cols);
+		const x = cx + (c - cols / 2) * 1.45;
+		const z = cz + (r - math.ceil(vis / cols) / 2) * 1.45;
+		soldiers[i].body.Position = new Vector3(x, FLOOR_Y + 0.95, z);
+		soldiers[i].head.Position = new Vector3(x, FLOOR_Y + 0.95 + 1.6, z);
 	}
 }
 
 // ---------------------------------------------------------------------------
 // Enemy visuals
 // ---------------------------------------------------------------------------
-
-interface EnemyVisual {
-	body: Part;
-	head: Part;
-	healthBar: Frame;
-	healthFill: Frame;
-	billboard: BillboardGui;
-	maxHp: number;
-}
-
+interface EnemyVis { body: Part; head: Part; fill: Frame; maxHp: number; isBoss: boolean }
 const enemyFolder = new Instance("Folder");
-enemyFolder.Name = "EnemyVisuals";
-enemyFolder.Parent = Workspace;
+enemyFolder.Name = "Enemies"; enemyFolder.Parent = Workspace;
+const enemyVisuals = new Map<number, EnemyVis>();
 
-const enemyVisuals = new Map<number, EnemyVisual>();
-
-function createEnemyVisual(data: EnemySpawnData): void {
-	const isBoss = data.maxHp > 20;
-
+function spawnEnemyVisual(data: EnemySpawnData): void {
+	const boss = data.isBoss;
 	const body = new Instance("Part");
-	body.Size = isBoss ? new Vector3(4, 6, 4) : new Vector3(1.8, 2.5, 1.8);
-	body.Anchored = true;
-	body.CanCollide = false;
+	body.Size = boss ? new Vector3(5, 8, 5) : new Vector3(2, 3, 2);
+	body.Anchored = true; body.CanCollide = false;
 	body.Material = Enum.Material.SmoothPlastic;
-	body.BrickColor = isBoss ? new BrickColor("Bright red") : new BrickColor("Bright red");
+	body.BrickColor = boss ? new BrickColor("Pastel brown") : new BrickColor("Bright red");
 	body.Position = data.position;
 	body.Parent = enemyFolder;
 
 	const head = new Instance("Part");
-	head.Size = isBoss ? new Vector3(3, 3, 3) : new Vector3(1.6, 1.6, 1.6);
-	head.Anchored = true;
-	head.CanCollide = false;
+	head.Size = boss ? new Vector3(3.5, 3.5, 3.5) : new Vector3(1.8, 1.8, 1.8);
+	head.Anchored = true; head.CanCollide = false;
 	head.Shape = Enum.PartType.Ball;
-	head.BrickColor = new BrickColor("Reddish brown");
-	head.Position = data.position.add(new Vector3(0, isBoss ? 4.5 : 2, 0));
+	head.BrickColor = boss ? new BrickColor("Reddish brown") : new BrickColor("Reddish brown");
+	head.Position = data.position.add(new Vector3(0, boss ? 6 : 2.5, 0));
 	head.Parent = enemyFolder;
 
-	// Health bar billboard
+	// HP bar billboard
 	const bb = new Instance("BillboardGui");
-	bb.Size = new UDim2(0, isBoss ? 120 : 70, 0, isBoss ? 20 : 12);
-	bb.StudsOffset = new Vector3(0, isBoss ? 6 : 3, 0);
-	bb.AlwaysOnTop = false;
+	bb.Size = new UDim2(0, boss ? 140 : 80, 0, boss ? 22 : 13);
+	bb.StudsOffset = new Vector3(0, boss ? 7 : 3.5, 0);
 	bb.Parent = body;
 
 	const bg = new Instance("Frame");
@@ -215,258 +223,263 @@ function createEnemyVisual(data: EnemySpawnData): void {
 
 	const fill = new Instance("Frame");
 	fill.Size = new UDim2(1, 0, 1, 0);
-	fill.BackgroundColor3 = new Color3(1, 0.1, 0.1);
+	fill.BackgroundColor3 = boss ? new Color3(1, 0.3, 0) : new Color3(1, 0.1, 0.1);
 	fill.BorderSizePixel = 0;
 	fill.Parent = bg;
 
-	enemyVisuals.set(data.id, {
-		body, head,
-		healthBar: bg,
-		healthFill: fill,
-		billboard: bb,
-		maxHp: data.maxHp,
-	});
+	enemyVisuals.set(data.id, { body, head, fill, maxHp: data.maxHp, isBoss: boss });
 }
 
-function updateEnemyHealth(data: EnemyHealthData): void {
-	const vis = enemyVisuals.get(data.id);
-	if (!vis) return;
-	const pct = data.hp / data.maxHp;
-	vis.healthFill.Size = new UDim2(pct, 0, 1, 0);
+function updateEnemyVis(data: EnemyHealthData): void {
+	const v = enemyVisuals.get(data.id);
+	if (!v) return;
+	v.fill.Size = new UDim2(data.hp / data.maxHp, 0, 1, 0);
 	if (data.hp <= 0) {
-		// Death flash then remove
-		vis.body.BrickColor = new BrickColor("Bright yellow");
-		task.delay(0.15, () => {
-			vis.body.Destroy();
-			vis.head.Destroy();
-			enemyVisuals.delete(data.id);
-		});
+		v.body.BrickColor = new BrickColor("Bright yellow");
+		task.delay(0.2, () => { v.body.Destroy(); v.head.Destroy(); enemyVisuals.delete(data.id); });
 	}
 }
 
-function removeEnemyVisual(id: number): void {
-	const vis = enemyVisuals.get(id);
-	if (!vis) return;
-	vis.body.Destroy();
-	vis.head.Destroy();
-	enemyVisuals.delete(id);
+function removeEnemyVis(id: number): void {
+	const v = enemyVisuals.get(id);
+	if (!v) return;
+	v.body.Destroy(); v.head.Destroy(); enemyVisuals.delete(id);
 }
 
-// Sync enemy part positions from server-side (server moves the invisible parts,
-// we mirror their position here every frame).
 function syncEnemyPositions(): void {
-	enemyVisuals.forEach((vis, id) => {
-		const serverPart = Workspace.FindFirstChild(`Enemy_${id}`) as Part | undefined;
-		if (!serverPart) return;
-		const pos = serverPart.Position;
-		vis.body.Position = pos;
-		vis.head.Position = pos.add(new Vector3(0, vis.maxHp > 20 ? 4.5 : 2, 0));
+	enemyVisuals.forEach((v, id) => {
+		const sp = Workspace.FindFirstChild(`Enemy_${id}`) as Part | undefined;
+		if (!sp) return;
+		v.body.Position = sp.Position;
+		v.head.Position = sp.Position.add(new Vector3(0, v.isBoss ? 6 : 2.5, 0));
 	});
 }
 
 // ---------------------------------------------------------------------------
-// Projectile visual
+// Obstacle visuals
 // ---------------------------------------------------------------------------
+interface ObstacleVis { part: Part; fill: Frame; maxHp: number }
+const obstVisuals = new Map<number, ObstacleVis>();
 
-function spawnProjectileEffect(origin: Vector3, direction: Vector3): void {
-	const proj = new Instance("Part");
-	proj.Size = new Vector3(0.3, 0.3, 1.2);
-	proj.Anchored = true;
-	proj.CanCollide = false;
-	proj.Material = Enum.Material.Neon;
-	proj.BrickColor = new BrickColor("Bright yellow");
-	proj.CFrame = new CFrame(origin, origin.add(direction));
-	proj.Parent = Workspace;
+function spawnObstacleVis(data: ObstacleData): void {
+	// The server already created the part; find it
+	const serverPart = Workspace.FindFirstChild(`Obstacle_${data.id}`) as Part | undefined;
+	if (!serverPart) return;
 
-	const goal = { Position: origin.add(direction.mul(50)) };
-	const tween = TweenService.Create(proj, new TweenInfo(0.35, Enum.EasingStyle.Linear), goal);
-	tween.Play();
-	tween.Completed.Connect(() => proj.Destroy());
+	const fill = new Instance("Frame");
+	fill.Size = new UDim2(1, 0, 1, 0);
+	fill.BackgroundColor3 = data.hasTroops ? new Color3(1, 0.9, 0) : new Color3(0.5, 0.3, 0.1);
+	fill.BorderSizePixel = 0;
+
+	const bg = new Instance("Frame");
+	bg.Size = new UDim2(1, 0, 0.4, 0);
+	bg.Position = new UDim2(0, 0, 0.6, 0);
+	bg.BackgroundColor3 = new Color3(0.15, 0.15, 0.15);
+	bg.BorderSizePixel = 0;
+	bg.Parent = serverPart;
+	fill.Parent = bg;
+
+	obstVisuals.set(data.id, { part: serverPart, fill, maxHp: data.hp });
+}
+
+function updateObstacleVis(data: EnemyHealthData): void {
+	const v = obstVisuals.get(data.id);
+	if (!v) return;
+	v.fill.Size = new UDim2(data.hp / data.maxHp, 0, 1, 0);
+	if (data.hp <= 0) {
+		// Flash white then let server part be destroyed
+		v.part.BrickColor = new BrickColor("White");
+		obstVisuals.delete(data.id);
+	}
 }
 
 // ---------------------------------------------------------------------------
-// Input / squad steering
+// Shooting
 // ---------------------------------------------------------------------------
+let shootTimer = 0;
 
-let squadX = 0;         // current lateral position of squad centre
-let squadZ = SQUAD_Z_PLAYER; // current forward position
+function autoShoot(dt: number, cx: number, cz: number): void {
+	shootTimer -= dt;
+	if (shootTimer > 0) return;
+	shootTimer = SHOOT_RATE;
 
-let currentState: GameState = GameState.Lobby;
-let currentSquadSize = 10;
-let touchStartX = 0;
-let isDragging = false;
+	let nearestPos: Vector3 | undefined;
+	let nearestDist = math.huge;
+	enemyVisuals.forEach((v) => {
+		const d = v.body.Position.sub(new Vector3(cx, FLOOR_Y + 1.5, cz)).Magnitude;
+		if (d < nearestDist) { nearestDist = d; nearestPos = v.body.Position; }
+	});
+	if (!nearestPos) return;
 
-// Track which gate panels were already triggered to avoid double-fire
+	const origin = new Vector3(cx, FLOOR_Y + 1.5, cz - 1);
+	const dir = nearestPos.sub(origin).Unit;
+
+	// Spray visual projectiles proportional to squad size
+	const rows = math.min(math.ceil(math.sqrt(math.min(currentSquadSize, MAX_SOLDIERS))), 6);
+	for (let r = 0; r < rows; r++) {
+		const xOff = (r - rows / 2) * 1.45;
+		const proj = new Instance("Part");
+		proj.Size = new Vector3(0.28, 0.28, 1.0);
+		proj.Anchored = true; proj.CanCollide = false;
+		proj.Material = Enum.Material.Neon;
+		proj.BrickColor = new BrickColor("Bright yellow");
+		proj.CFrame = new CFrame(new Vector3(origin.X + xOff, origin.Y, origin.Z), nearestPos);
+		proj.Parent = Workspace;
+		const t = TweenService.Create(proj, new TweenInfo(0.3, Enum.EasingStyle.Linear),
+			{ Position: origin.add(dir.mul(60)) });
+		t.Play();
+		t.Completed.Connect(() => proj.Destroy());
+	}
+
+	getShootRemote().FireServer({ origin, direction: dir });
+}
+
+// ---------------------------------------------------------------------------
+// Gate proximity
+// ---------------------------------------------------------------------------
 const triggeredGates = new Set<string>();
 
-function checkGateTriggers(): void {
-	// Scan gate panels near squad Z
-	Workspace.FindFirstChild("GameMap")?.GetChildren().forEach((child) => {
+function checkGates(cx: number, cz: number, squad: number): void {
+	const map = Workspace.FindFirstChild("GameMap");
+	if (!map) return;
+	map.GetChildren().forEach((child) => {
+		if (!child.IsA("Part")) return;
 		const part = child as Part;
-		if (!part.Name.match("^Gate_")) return;
+		const name = part.Name;
+		if (!name.match("^Gate_")[0]) return;
+		if (triggeredGates.has(name)) return;
 
-		const diff = part.Position.Z - squadZ;
-		if (math.abs(diff) > 1) return; // not near this gate Z
-		if (math.abs(part.Position.X - squadX) > PATH_WIDTH / 4 + 1) return; // not in this lane
+		const zDiff = part.Position.Z - cz;
+		if (math.abs(zDiff) > 1.5) return;
+		if (math.abs(part.Position.X - cx) > PATH_WIDTH / 3) return;
 
-		if (triggeredGates.has(part.Name)) return;
-		triggeredGates.add(part.Name);
-
-		// Parse gate id and side from name "Gate_<id>_Left" / "Gate_<id>_Right"
-		const parts = part.Name.split("_");
-		if (parts.size() < 3) return;
-		const gateId = tonumber(parts[1]);
-		const side = parts[2];
+		triggeredGates.add(name);
+		const segs = name.split("_");
+		if (segs.size() < 3) return;
+		const gateId = tonumber(segs[1]);
+		const side   = segs[2];
 		if (!gateId) return;
 
 		getGateTriggerRemote().FireServer(gateId, side);
 
-		// Visual flash on the panel
+		// Flash
 		const orig = part.BrickColor;
 		part.BrickColor = new BrickColor("White");
-		task.delay(0.2, () => { part.BrickColor = orig; });
+		task.delay(0.25, () => { if (part && part.Parent) part.BrickColor = orig; });
 	});
 }
 
 // ---------------------------------------------------------------------------
-// Auto-shoot toward nearest enemy
+// State tracking
 // ---------------------------------------------------------------------------
+let curState: GameState = GameState.Lobby;
+let currentSquadSize    = 15;
 
-let shootCooldown = 0;
+function onGameState(d: GameStateData): void {
+	curState          = d.state;
+	currentSquadSize  = d.squadSize;
 
-function autoShoot(dt: number): void {
-	if (currentState !== GameState.Playing) return;
-	shootCooldown -= dt;
-	if (shootCooldown > 0) return;
-	shootCooldown = 0.15; // fire rate
+	lblWave.Text  = `Wave ${d.wave}`;
+	lblScore.Text = tostring(d.score);
+	lblSquad.Text = `x${d.squadSize}`;
+	lblMult.Text  = `x${d.multiplier}`;
 
-	// Find nearest visible enemy
-	let nearestPos: Vector3 | undefined;
-	let nearestDist = math.huge;
-	enemyVisuals.forEach((vis) => {
-		const d = vis.body.Position.sub(new Vector3(squadX, FLOOR_Y + 1, squadZ)).Magnitude;
-		if (d < nearestDist) {
-			nearestDist = d;
-			nearestPos = vis.body.Position;
-		}
-	});
-
-	if (!nearestPos) return;
-
-	const origin = new Vector3(squadX, FLOOR_Y + 1.5, squadZ - 1);
-	const direction = nearestPos.sub(origin).Unit;
-
-	// Spawn several projectile visuals (one per row of squad for flavor)
-	const rows = math.ceil(math.sqrt(math.min(currentSquadSize, MAX_SQUAD_VISUAL)));
-	for (let r = 0; r < rows; r++) {
-		const xOff = (r - rows / 2) * 1.4;
-		spawnProjectileEffect(
-			new Vector3(origin.X + xOff, origin.Y, origin.Z),
-			direction,
-		);
+	if (d.bossMaxHp > 0) {
+		bossBarBg.Visible = true;
+		bossBarFill.Size  = new UDim2(d.bossHp / d.bossMaxHp, 0, 1, 0);
+		bossBarLbl.Text   = `BOSS  ${d.bossHp} / ${d.bossMaxHp}`;
+	} else {
+		bossBarBg.Visible = false;
 	}
 
-	// Tell server
-	getShootRemote().FireServer({ origin, direction });
-}
-
-// ---------------------------------------------------------------------------
-// Game state updates
-// ---------------------------------------------------------------------------
-
-function onGameState(data: GameStateData): void {
-	currentState = data.state;
-	currentSquadSize = data.lives; // server repurposes "lives" as squadSize
-
-	waveLabel.Text  = `Wave ${data.wave}`;
-	scoreLabel.Text = `Score ${data.score}`;
-	squadLabel.Text = `Squad ${data.lives}`;
-	multLabel.Text  = `x${data.multiplier}`;
-
-	if (data.state === GameState.WaveComplete) {
-		overlay.Visible = true;
-		overlayLabel.Text = `Wave ${data.wave} Clear! +${50 * data.multiplier}`;
+	if (d.state === GameState.WaveComplete) {
+		overlay.Visible   = true;
+		overlayLbl.Text   = `Wave ${d.wave} Clear!\n+${100 * d.multiplier} pts`;
 		task.delay(2.5, () => { overlay.Visible = false; });
-	} else if (data.state === GameState.GameOver) {
+	} else if (d.state === GameState.GameOver) {
 		overlay.Visible = true;
-		overlayLabel.Text = `GAME OVER\nScore: ${data.score}`;
+		overlayLbl.Text = `GAME OVER\nScore: ${d.score}`;
 	} else {
 		overlay.Visible = false;
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Main render loop
+// Input / steering
 // ---------------------------------------------------------------------------
+let squadX = 0;
+let squadZ = PLAYER_Z;
+let touchStartX = 0;
+let isDragging  = false;
+const LANE_LIMIT = PATH_WIDTH / 2 - SQUAD_FORM_R;
 
-RunService.RenderStepped.Connect((dt: number) => {
-	if (currentState !== GameState.Playing) return;
-
-	// Steer left/right with A/D or arrow keys or touch drag
-	let steerDir = 0;
-	if (UserInputService.IsKeyDown(Enum.KeyCode.A) || UserInputService.IsKeyDown(Enum.KeyCode.Left)) {
-		steerDir = -1;
-	} else if (UserInputService.IsKeyDown(Enum.KeyCode.D) || UserInputService.IsKeyDown(Enum.KeyCode.Right)) {
-		steerDir = 1;
-	}
-	squadX = math.clamp(
-		squadX + steerDir * SQUAD_STEER_SPEED * dt,
-		-(PATH_WIDTH / 2 - SQUAD_FORMATION_RADIUS),
-		 (PATH_WIDTH / 2 - SQUAD_FORMATION_RADIUS),
-	);
-
-	// March forward (toward enemies)
-	squadZ = math.max(SQUAD_Z_END, squadZ - SQUAD_MARCH_SPEED * dt);
-
-	// Sync squad visuals
-	updateSquadVisuals(currentSquadSize, squadX, squadZ);
-
-	// Sync enemy positions from server
-	syncEnemyPositions();
-
-	// Check gate triggers
-	checkGateTriggers();
-
-	// Auto-shoot
-	autoShoot(dt);
-
-	// Camera follows squad
-	const cam = Workspace.CurrentCamera;
-	if (cam) {
-		const target = new Vector3(squadX, FLOOR_Y + 15, squadZ + 20);
-		const lookAt = new Vector3(squadX, FLOOR_Y, squadZ - 10);
-		cam.CFrame = new CFrame(target, lookAt);
-	}
-});
-
-// Touch / mobile steering
-UserInputService.TouchStarted.Connect((touch) => {
-	isDragging = true;
-	touchStartX = touch.Position.X;
-});
-UserInputService.TouchMoved.Connect((touch) => {
+UserInputService.TouchStarted.Connect((t) => { isDragging = true; touchStartX = t.Position.X; });
+UserInputService.TouchMoved.Connect((t) => {
 	if (!isDragging) return;
-	const delta = touch.Position.X - touchStartX;
-	touchStartX = touch.Position.X;
-	squadX = math.clamp(
-		squadX + delta * 0.05,
-		-(PATH_WIDTH / 2 - SQUAD_FORMATION_RADIUS),
-		 (PATH_WIDTH / 2 - SQUAD_FORMATION_RADIUS),
-	);
+	squadX = math.clamp(squadX + (t.Position.X - touchStartX) * 0.055, -LANE_LIMIT, LANE_LIMIT);
+	touchStartX = t.Position.X;
 });
 UserInputService.TouchEnded.Connect(() => { isDragging = false; });
 
 // ---------------------------------------------------------------------------
-// Wire up server remotes
+// Render loop
 // ---------------------------------------------------------------------------
+RunService.RenderStepped.Connect((dt: number) => {
+	if (curState !== GameState.Playing && curState !== GameState.BossFight) return;
 
-getGameStateRemote().OnClientEvent.Connect((data) => onGameState(data as GameStateData));
-getEnemySpawnedRemote().OnClientEvent.Connect((data) => createEnemyVisual(data as EnemySpawnData));
-getEnemyHealthRemote().OnClientEvent.Connect((data) => updateEnemyHealth(data as EnemyHealthData));
-getEnemyReachedEndRemote().OnClientEvent.Connect((id) => removeEnemyVisual(id as number));
+	// Keyboard steer
+	let steer = 0;
+	if (UserInputService.IsKeyDown(Enum.KeyCode.A) || UserInputService.IsKeyDown(Enum.KeyCode.Left))  steer = -1;
+	if (UserInputService.IsKeyDown(Enum.KeyCode.D) || UserInputService.IsKeyDown(Enum.KeyCode.Right)) steer =  1;
+	squadX = math.clamp(squadX + steer * STEER_SPEED * dt, -LANE_LIMIT, LANE_LIMIT);
 
-// Fetch initial state
-const initState = getRequestStateFunction().InvokeServer() as GameStateData;
-onGameState(initState);
+	// March forward
+	squadZ = math.max(FAR_Z, squadZ - MARCH_SPEED * dt);
+
+	// Squad visuals
+	placeSoldiers(squadX, squadZ, currentSquadSize);
+
+	// Enemy/obstacle position sync
+	syncEnemyPositions();
+
+	// Gate triggers
+	checkGates(squadX, squadZ, currentSquadSize);
+
+	// Auto-shoot
+	autoShoot(dt, squadX, squadZ);
+
+	// Camera: top-down follow
+	const cam = Workspace.CurrentCamera;
+	if (cam) {
+		cam.CFrame = new CFrame(
+			new Vector3(squadX, FLOOR_Y + 18, squadZ + 22),
+			new Vector3(squadX, FLOOR_Y,      squadZ - 8),
+		);
+	}
+});
+
+// ---------------------------------------------------------------------------
+// Hero ultimate notification
+// ---------------------------------------------------------------------------
+getHeroUltimateRemote().OnClientEvent.Connect((heroIdx, desc) => {
+	const hero = HEROES[heroIdx as number];
+	ultNotif.Text    = `★ ${hero.name}: ${desc}`;
+	ultNotif.Visible = true;
+	task.delay(3, () => { ultNotif.Visible = false; });
+});
+
+// ---------------------------------------------------------------------------
+// Server event wiring
+// ---------------------------------------------------------------------------
+getGameStateRemote().OnClientEvent.Connect((d)   => onGameState(d as GameStateData));
+getEnemySpawnedRemote().OnClientEvent.Connect((d) => spawnEnemyVisual(d as EnemySpawnData));
+getEnemyHealthRemote().OnClientEvent.Connect((d)  => updateEnemyVis(d as EnemyHealthData));
+getEnemyReachedEndRemote().OnClientEvent.Connect((id) => removeEnemyVis(id as number));
+getObstacleSpawnRemote().OnClientEvent.Connect((d)  => spawnObstacleVis(d as ObstacleData));
+getObstacleHealthRemote().OnClientEvent.Connect((d) => updateObstacleVis(d as EnemyHealthData));
+
+// Initial state fetch
+const init = getRequestStateFunction().InvokeServer() as GameStateData;
+onGameState(init);
 
 print("[ShootingGame] Client ready.");
