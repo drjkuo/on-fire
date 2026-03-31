@@ -16,13 +16,13 @@ export const FLOOR_Y = 0;
 export const GATE_SPACING = 15;
 
 /** Seconds between wave spawns. */
-export const WAVE_INTERVAL = 10;
+export const WAVE_INTERVAL = 20;
 
 /** Base horde size for wave 1. */
 export const BASE_ENEMIES_PER_WAVE = 8;
 
 /** Enemy walk speed (studs/s). */
-export const ENEMY_SPEED = 5;
+export const ENEMY_SPEED = 2.5;
 
 /** Base HP for regular enemies. */
 export const ENEMY_BASE_HP = 4;

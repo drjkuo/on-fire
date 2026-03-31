@@ -44,13 +44,13 @@ import {
 // ---------------------------------------------------------------------------
 // World / squad constants
 // ---------------------------------------------------------------------------
-const MARCH_SPEED   = 9;    // forward studs/s
-const STEER_SPEED   = 14;   // lateral studs/s
+const MARCH_SPEED   = 4.5;  // forward studs/s (half default pacing)
+const STEER_SPEED   = 7;    // lateral studs/s
 const SQUAD_FORM_R  = 3.5;  // formation spread radius
 const MAX_SOLDIERS  = 35;   // cap on rendered parts
 const PLAYER_Z      = 0;
 const FAR_Z         = -75;
-const SHOOT_RATE    = 0.12; // seconds between shots
+const SHOOT_RATE    = 0.24; // seconds between shots
 
 // ---------------------------------------------------------------------------
 // Synced game state — must sit before any closure (e.g. autoShoot) reads it, otherwise
@@ -430,7 +430,7 @@ function onGameState(d: GameStateData): void {
 	if (d.state === GameState.WaveComplete) {
 		overlay.Visible   = true;
 		overlayLbl.Text   = `Wave ${d.wave} Clear!\n+${100 * d.multiplier} pts`;
-		task.delay(2.5, () => { overlay.Visible = false; });
+		task.delay(5, () => { overlay.Visible = false; });
 	} else if (d.state === GameState.GameOver) {
 		overlay.Visible = true;
 		overlayLbl.Text = `GAME OVER\nScore: ${d.score}`;

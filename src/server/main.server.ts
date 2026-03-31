@@ -345,7 +345,7 @@ function tickHeroes(dt: number): void {
 			const origMult = multiplier;
 			multiplier *= 3;
 			broadcast();
-			task.delay(4, () => { multiplier = origMult; broadcast(); });
+			task.delay(8, () => { multiplier = origMult; broadcast(); });
 		} else if (hero.name === "Rocket Commander") {
 			// 100 damage to ALL enemies
 			activeEnemies.forEach((e) => damageEnemy(e, 100));
@@ -405,11 +405,11 @@ function startWave(): void {
 	const isBossWave = currentWave % WAVES_PER_BOSS === 0;
 	if (isBossWave) {
 		// Spawn boss only (no horde)
-		task.delay(1, () => spawnEnemy(currentWave, true));
+		task.delay(2, () => spawnEnemy(currentWave, true));
 	} else {
 		const count = BASE_ENEMIES_PER_WAVE + (currentWave - 1) * 2;
 		for (let i = 0; i < count; i++) {
-			task.delay(i * 0.35, () => spawnEnemy(currentWave, false));
+			task.delay(i * 0.7, () => spawnEnemy(currentWave, false));
 		}
 	}
 }
@@ -529,7 +529,7 @@ RunService.Heartbeat.Connect((dt: number) => {
 		score += WAVE_COMPLETION_BONUS * multiplier;
 		gameState = GameState.WaveComplete;
 		broadcast();
-		task.delay(3, () => {
+		task.delay(6, () => {
 			if (gameState === GameState.WaveComplete) {
 				gameState = GameState.Playing;
 				waveTimer = 0;
