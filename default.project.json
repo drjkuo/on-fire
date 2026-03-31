@@ -25,6 +25,9 @@
       "rbxts_include": {
         "$path": "include"
       },
+      "Packages": {
+        "$path": "out/packages"
+      },
       "Shared": {
         "$path": "out/shared"
       },
@@ -40,6 +43,13 @@
       },
       "Map": {
         "$className": "Folder"
+      }
+    },
+
+    "node_modules": {
+      "$className": "Folder",
+      "@rbxts": {
+        "$path": "node_modules/@rbxts"
       }
     },
 
