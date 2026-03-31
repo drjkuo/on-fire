@@ -5,7 +5,7 @@
   "scripts": {
     "build": "rbxtsc",
     "watch": "rbxtsc --watch",
-    "prepublish": "npm run build"
+    "prepare": "npm run build"
   },
   "keywords": [],
   "license": "MIT",
