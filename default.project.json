@@ -25,9 +25,6 @@
       "rbxts_include": {
         "$path": "include"
       },
-      "Packages": {
-        "$path": "out/packages"
-      },
       "Shared": {
         "$path": "out/shared"
       },
