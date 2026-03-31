@@ -1,0 +1,21 @@
+{
+  "name": "on-fire",
+  "version": "1.0.0",
+  "description": "A wave-based shooting game built with roblox-ts",
+  "scripts": {
+    "build": "rbxtsc",
+    "watch": "rbxtsc --watch",
+    "prepublish": "npm run build"
+  },
+  "keywords": [],
+  "license": "MIT",
+  "dependencies": {
+    "@rbxts/compiler-types": "^3.0.0-types.0",
+    "@rbxts/services": "^1.5.4"
+  },
+  "devDependencies": {
+    "@rbxts/types": "^1.0.817",
+    "roblox-ts": "^2.3.0",
+    "typescript": "^5.4.5"
+  }
+}
