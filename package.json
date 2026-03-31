@@ -10,6 +10,7 @@
   "keywords": [],
   "license": "MIT",
   "dependencies": {
+    "@rbxts/compiler-types": "^3.0.0-types.0",
     "@rbxts/services": "^1.5.4"
   },
   "devDependencies": {

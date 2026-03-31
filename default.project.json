@@ -22,6 +22,9 @@
 
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
+      "rbxts_include": {
+        "$path": "include"
+      },
       "Shared": {
         "$path": "out/shared"
       },

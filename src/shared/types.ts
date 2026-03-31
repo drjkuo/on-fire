@@ -10,6 +10,9 @@
 /** Total number of path tiles stretching away from the player spawn. */
 export const PATH_LENGTH = 60;
 
+/** Y coordinate of the ground/floor surface. */
+export const FLOOR_Y = 0;
+
 /** Width of the bridge/path in studs. */
 export const PATH_WIDTH = 10;
 
@@ -123,4 +126,23 @@ export interface ShootRequest {
 	origin: Vector3;
 	/** Unit direction vector. */
 	direction: Vector3;
+}
+
+// ---------------------------------------------------------------------------
+// Additional gate effect helpers (negative gates like -8 shown in screenshots)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a random gate pair: one positive, one negative side.
+ * Mirrors the "-8 / +5" style gates seen in the reference screenshots.
+ */
+export function randomGatePair(): { leftLabel: string; rightLabel: string; leftEffect: GateEffect; rightEffect: GateEffect } {
+	const addVal  = math.random(1, 5);
+	const loseVal = math.random(2, 8);
+	return {
+		leftLabel:   `-${loseVal}`,
+		rightLabel:  `+${addVal}`,
+		leftEffect:  { type: "add", value: -loseVal },
+		rightEffect: { type: "add", value: addVal },
+	};
 }
